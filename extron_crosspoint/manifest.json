@@ -2,7 +2,7 @@
   "domain": "extron_crosspoint",
   "name": "Extron CrossPoint Matrix",
   "codeowners": ["@yourusername"],
-  "documentation": "https://github.com/yourusername/extron_crosspoint",
+  "documentation": "https://github.com/wilkinc/HA-Extron-Crosspoint",
   "integration_type": "hub",
   "iot_class": "local_push",
   "version": "1.0.0"
