@@ -7,7 +7,7 @@ More detail to be added
 
 example configuration.yaml
 
-
+```
 extron_crosspoint:
   host: 10.0.1.200 # or your local hostname
   port: 23
@@ -33,3 +33,4 @@ extron_crosspoint:
       input: 3
       video_out: 2 # RGB
       audio_out: 1 # Amp
+```
