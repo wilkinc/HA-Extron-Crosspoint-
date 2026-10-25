@@ -1,41 +1,59 @@
-"""Select entities for Extron CrossPoint outputs using push updates."""
+"""Select entity for Extron CrossPoint representing active source presets."""
 
 import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import callback
 
-from .const import DOMAIN, CONF_INPUTS, CONF_OUTPUTS
+from .const import (
+    DOMAIN,
+    CONF_SOURCES,
+    CONF_SOURCE_INPUT,
+    CONF_SOURCE_NAME,
+    CONF_SOURCE_VIDEO_OUT,
+    CONF_SOURCE_AUDIO_OUT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the Extron output select entities."""
+    """Set up the Extron Source Preset select entity."""
     data = hass.data[DOMAIN]
     client = data["client"]
     conf = data["config"]
 
-    inputs_map = conf[CONF_INPUTS]
-    outputs_map = conf[CONF_OUTPUTS]
+    sources_conf = conf.get(CONF_SOURCES, {})
+    if not sources_conf:
+        _LOGGER.warning("No sources/presets defined for extron_crosspoint in configuration.yaml")
+        return
 
-    entities = []
-    for out_num, out_name in outputs_map.items():
-        entities.append(ExtronOutputSelect(client, out_num, out_name, inputs_map))
-
-    async_add_entities(entities)
+    async_add_entities([ExtronSourcePresetSelect(client, sources_conf)])
 
 
-class ExtronOutputSelect(SelectEntity):
-    """Represents a physical output on the Extron CrossPoint."""
+class ExtronSourcePresetSelect(SelectEntity):
+    """Represents the active gaming source on the Extron CrossPoint."""
 
-    def __init__(self, client, out_num: int, out_name: str, inputs_map: dict):
+    def __init__(self, client, sources_conf: dict):
         self._client = client
-        self._out_num = out_num
-        self._attr_name = f"Extron {out_name}"
-        self._attr_unique_id = f"extron_output_{out_num}"
-        self._inputs_map = inputs_map
-        self._name_to_input = {v: k for k, v in inputs_map.items()}
-        self._attr_options = list(inputs_map.values())
+        self._sources = sources_conf
+        self._attr_name = "Extron Active Source"
+        self._attr_unique_id = "extron_active_source"
+        self._attr_icon = "mdi:gamepad-variant"
+
+        # Build lookup tables
+        # Display name -> preset dictionary
+        self._name_to_source = {}
+        # Physical Input number -> Display name
+        self._input_to_name = {}
+
+        options = []
+        for key, s_data in self._sources.items():
+            name = s_data.get(CONF_SOURCE_NAME, key)
+            self._name_to_source[name] = s_data
+            self._input_to_name[s_data[CONF_SOURCE_INPUT]] = name
+            options.append(name)
+
+        self._attr_options = options
         self._attr_current_option = None
 
     @property
@@ -43,17 +61,49 @@ class ExtronOutputSelect(SelectEntity):
         return False
 
     async def async_added_to_hass(self) -> None:
-        self._client.register_callback(self._out_num, self._handle_tie_update)
+        """Register callback for real-time front-panel tie updates."""
+        self._client.register_callback(self._handle_tie_update)
 
     @callback
-    def _handle_tie_update(self, in_num: int) -> None:
-        if in_num in self._inputs_map:
-            self._attr_current_option = self._inputs_map[in_num]
-        elif in_num == 0:
-            self._attr_current_option = None
-        self.async_write_ha_state()
+    def _handle_tie_update(self, out_num: int, in_num: int, plane: str) -> None:
+        """Update selected source if an Extron front-panel button was pressed."""
+        # Check if the incoming tie matches one of our defined sources
+        if in_num in self._input_to_name:
+            source_name = self._input_to_name[in_num]
+            source_cfg = self._name_to_source[source_name]
+
+            # If the tie event matches this source's designated video or audio output
+            if out_num in (source_cfg[CONF_SOURCE_VIDEO_OUT], source_cfg[CONF_SOURCE_AUDIO_OUT]):
+                self._attr_current_option = source_name
+                self.async_write_ha_state()
 
     async def async_select_option(self, option: str) -> None:
-        in_num = self._name_to_input.get(option)
-        if in_num is not None:
-            await self._client.route(in_num, self._out_num, tie_type="all")
+        """Route both video and audio independently based on preset definition."""
+        source = self._name_to_source.get(option)
+        if not source:
+            return
+
+        in_num = source[CONF_SOURCE_INPUT]
+        video_out = source[CONF_SOURCE_VIDEO_OUT]
+        audio_out = source[CONF_SOURCE_AUDIO_OUT]
+
+        _LOGGER.debug(
+            "Activating preset '%s': In %s -> Video Out %s, Audio Out %s",
+            option,
+            in_num,
+            video_out,
+            audio_out,
+        )
+
+        if video_out == audio_out:
+            # Video and Audio are going to the exact same output: route jointly (!)
+            await self._client.route(in_num, video_out, tie_type="all")
+        else:
+            # Coordinated breakaway routing:
+            # 1. Route video to video_out (%)
+            await self._client.route(in_num, video_out, tie_type="video")
+            # 2. Route audio to audio_out ($)
+            await self._client.route(in_num, audio_out, tie_type="audio")
+
+        self._attr_current_option = option
+        self.async_write_ha_state()
